@@ -13,11 +13,11 @@ def cvt_lms_to_np(landmark):
 
 DataPath = './DogFaceNet_Dataset/after_4_bis/'
 
-detector = dlib.cnn_face_detection_model_v1('./model/dogHeadDetector.dat')
-predictor = dlib.shape_predictor('./model/landmarkDetector.dat')
+detector = dlib.cnn_face_detection_model_v1('./saved_model/dogHeadDetector.dat')
+predictor = dlib.shape_predictor('./saved_model/landmarkDetector.dat')
 output_path = './cropped_img'
 save_img_size = (96, 96)
-f = open('./img_path.txt', 'a')
+f = open('./cropFail_path.txt', 'a')
 
 
 cnt_no_find = 0
@@ -26,7 +26,7 @@ cnt_crop_image = 0
 if not os.path.exists(output_path):
     os.mkdir(output_path)
 
-for root, dir, files in os.walk(DataPath):
+for root, dirs, files in os.walk(DataPath):
     file_id = root.split('/')[-1]
     file_id_dir = os.path.join(output_path, file_id)
     if not os.path.exists(file_id_dir):
