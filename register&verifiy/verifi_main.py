@@ -2,9 +2,9 @@ import cv2
 import os
 import torch
 import numpy as np
-import dlib
 from PIL import Image
 import torchvision.transforms as transforms
+from util import *
 
 '''이미지들어오면 해당 id의 db에서 이미지들과 비교
 평균 threshold보다 작으면 같은 개 
@@ -14,22 +14,29 @@ class verification:
     def __init__(self, user_id, img):
         self.user_id = user_id
         self.img_path = img
-        self.face_size = (96, 96)
-        self.detector = dlib.cnn_face_detection_model_v1('./save_model/dogHeadDetector.dat')
-        self.predictor = dlib.shape_predictor('./save_model/landmarkDetector.dat')
+
+        self.face_size = (100, 100)
+        self.use_cuda = torch.cuda.is_available()
+        self.device = "cuda" if self.use_cuda else "cpu"
+        self.input_img_size = (416, 416)
+
+        pt_file = './save_model/best.pt'
+        self.face_model = torch.load(pt_file, map_location=self.device)['model'].float().fuse().eval()
+        pth_file = './save_model/483_0.062.pth'
+        self.siamese_model = torch.load(pth_file, map_location=self.device).eval()
 
         # ======DB에서 받아오는 거=======
         self.DB_PATH = './frame_save' + f'/{self.user_id}'
         self.avg_thres = 1.91 
         # ==============================
-        pth_file = './save_model/483_0.062.pth'
-        self.use_cuda = torch.cuda.is_available()
-        device = "cuda" if self.use_cuda else "cpu"
-        self.model = torch.load(pth_file).to(device)
-        self.model.eval()
-    
+        
+
     def process(self):
-        face_img = self.get_dog_face(margin=10)
+        face_img = self.get_dog_face(conf_thres=0.1, iou_thres=0.6)
+        if face_img is None:
+            print("정확한 얼굴이 필요합니다!")
+            return None
+
         real_avg_thres = self._compare_img(face_img)
         if real_avg_thres <= self.avg_thres:
             print("같은 개!")
@@ -37,44 +44,34 @@ class verification:
         else:
             print("다른 개")
             return False
-    # 바꿀거
-    def _cvt_lms_to_np(self, landmark):
-        coords = np.zeros((6, 2), dtype=int)
-        for i in range(6):
-            x = landmark.part(i).x
-            y = landmark.part(i).y
-            coords[i] = (x, y)
-        return coords
 
-    # 바꿀거
-    def get_dog_face(self, margin):
+    def get_dog_face(self, conf_thres, iou_thres):
         frame = cv2.imread(self.img_path)
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img_h, img_w = img.shape[:2]
-        faces = self.detector(img, upsample_num_times=1)
-        if not faces:
-            return None
-        else:
-            for i, face in enumerate(faces):
-                x1, y1 = face.rect.left(), face.rect.top()
-                x2, y2 = face.rect.right(), face.rect.bottom()
-                
-                shape = self.predictor(img, face.rect)
-                lms = self._cvt_lms_to_np(shape)
-                
-                if lms[0][1] < y1:
-                    y1 = lms[0][1]
-                if lms[3][1] > y2:
-                    y2 = lms[3][1]
+        img = cv2.resize(frame, self.input_img_size, interpolation=cv2.INTER_LINEAR)
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img = np.ascontiguousarray(img)
 
-                x1 = max(x1 - margin, 0)
-                y1 = max(y1 - margin, 0)
-                x2 = min(x2 + margin, img_w)
-                y2 = min(y2 + margin, img_h)
-                crop_img = img[y1:y2, x1:x2]
+        img = torch.from_numpy(img).to(self.device).float()
+        img /= 255.0
+        if img.ndimension() == 3:
+            img = img.unsqueeze(0)
 
-            crop_img = cv2.resize(crop_img, self.face_size)
-            return crop_img
+        # Inference
+        pred = self.face_model(img)[0]
+
+        # Apply NMS
+        pred = non_max_suppression(pred, conf_thres, iou_thres, classes=None, agnostic=False)
+        # Process detections
+        for i, det in enumerate(pred):  # detections per image
+            if det is not None and len(det)==1:
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_coords(self.input_img_size, det[:, :4], frame.shape).round()
+                # Write results
+                for *xyxy, conf, cls in det:
+                    x1, y1, x2, y2 = xyxy
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                    crop_img = frame[y1:y2, x1:x2].copy()
+        return crop_img
 
     def _get_images(self, path):
         img_lists = []
@@ -89,7 +86,7 @@ class verification:
         img_lists = self._get_images(self.DB_PATH)
 
         for img in img_lists:
-            distance = self._matching(image, img, self.model)
+            distance = self._matching(image, img, self.siamese_model)
             total += distance
         avg = total / len(img_lists)
         return avg
@@ -119,8 +116,8 @@ class verification:
         return euclidean_distance
 
 if __name__ == "__main__":
-    user_id = 2
-    img = './ex.png'
+    user_id = 1
+    img = './1_ex.png'
     verify = verification(user_id, img)
     print(verify.process())
 
